@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>将一个副作用函数从所有与之关联的依赖集合中移除-重新设计副作用函数</title>
+</head>
+<body>
+  <script>
+    let activeEffect;
+    
+    const bucket = new WeakMap();
+    const data = { ok: true, text: 'hello world' }
+
+    function effect(fn) {
+      const effectFn = () => {
+        activeEffect = effectFn;
+        fn();
+      }
+      
+      effectFn.deps = [];
+
+      effectFn();
+    }
+
+    
+    const obj = new Proxy(data, {
+      get(target, key) {
+        track(target, key);
+        return target[key];
+      },
+
+      set(target, key, newVal) {
+        target[key] = newVal;
+        trigger(target, key);
+      }
+    })
+
+
+    function track(target, key) {
+      if(!activeEffect) return target[key];
+      let depsMap = bucket.get(target);
+      if(!depsMap) {
+        bucket.set(target, (depsMap = new Map()));
+      }
+      let deps = depsMap.get(key);
+      if(!deps) {
+        depsMap.set(key, (deps = new Set()));
+      }
+      deps.add(activeEffect);
+
+      activeEffect.deps.push(deps);
+    }
+
+    function trigger(target, key) {
+      const depsMap = bucket.get(target);
+      if(!depsMap) return
+      const effects = depsMap.get(key);
+      effects && effects.forEach(fn => fn());
+    }
+
+    effect(function effectFn() {
+      console.log(1); // 3次
+      document.body.innerText = obj.ok ? obj.text: 'not';
+    })
+
+    setTimeout(() => {
+      obj.ok = false;
+      obj.text = 123;
+    }, 1000)
+
+  </script>
+</body>
+</html>
