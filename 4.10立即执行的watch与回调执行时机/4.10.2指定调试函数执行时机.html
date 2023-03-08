@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>指定调试函数执行时机</title>
+</head>
+<body>
+  <script>
+    
+    let activeEffect;
+    const effectStack = [];
+    
+    const bucket = new WeakMap();
+    const data = { num: 1, num2: 2 }
+
+    function effect(fn, options = {}) {
+      const effectFn = () => {
+        cleanup(effectFn);
+        activeEffect = effectFn;
+        effectStack.push(effectFn);
+        const res = fn();
+        effectStack.pop();
+        activeEffect = effectStack[effectStack.length - 1];
+        return res;
+      }
+      effectFn.options = options;
+      effectFn.deps = [];
+      if(!options.lazy) {
+        effectFn();
+      }
+      return effectFn;
+    }
+
+    function cleanup(effectFn) {
+      for (let i = 0; i < effectFn.deps.length; i++) {
+        const deps = effectFn.deps[i];
+        deps.delete(effectFn);
+      }
+      effectFn.deps.length = 0;
+    }
+
+
+    const obj = new Proxy(data, {
+      get(target, key) {
+        track(target, key);
+        return target[key];
+      },
+
+      set(target, key, newVal) {
+        target[key] = newVal;
+        trigger(target, key);
+      }
+    })
+
+
+    function track(target, key) {
+      if(!activeEffect) return target[key];
+      let depsMap = bucket.get(target);
+      if(!depsMap) {
+        bucket.set(target, (depsMap = new Map()));
+      }
+      let deps = depsMap.get(key);
+      if(!deps) {
+        depsMap.set(key, (deps = new Set()));
+      }
+      deps.add(activeEffect);
+
+      activeEffect.deps.push(deps);
+    }
+
+    function trigger(target, key) {
+      const depsMap = bucket.get(target);
+      if(!depsMap) return
+      const effects = depsMap.get(key);
+
+      const effectsToRun = new Set(effects);
+
+      effects && effects.forEach(effectFn => {
+        if (effectFn !== activeEffect) {
+          effectsToRun.add(effectFn);
+        }
+      })
+
+      effectsToRun.forEach(effectFn => {
+        if (effectFn.options.scheduler) {
+          effectFn.options.scheduler(effectFn);
+        } else {
+          effectFn();
+        }
+      });
+    }
+    
+    const effectFn = effect(
+      () => obj.num,
+      { lazy: true }
+    )
+
+    function computed(getter) {
+      let value;
+      let dirty = true;
+
+      const effectFn = effect(getter, {
+        lazy: true,
+        scheduler () {
+          dirty = true
+        }
+      })
+
+      const obj = {
+        get value() {
+          if(dirty) {
+            value = effectFn();
+            dirty = false
+          }
+          return value;
+        }
+      }
+
+      return obj;
+    }
+
+    const sumRes = computed(() => {
+      return obj.num + obj.num2;
+    });
+
+    function watch(source, cb, options = {}) {
+      let getter;
+      if (typeof source === 'function') {
+        getter = source;
+      } else {
+        getter = () => traverse(source);
+      }
+
+      let oldValue, newValue;
+
+      const job = () => {
+        newValue = effectFn();
+        cb(newValue, oldValue);
+        oldValue = newValue;
+      }
+
+      const effectFn = effect(
+        () => getter(),
+        {
+          lazy: true,
+          scheduler: () => {
+            if (options.flush === 'post') {
+              const p = Promise.resolve();
+              p.then(job);
+            } else {
+              job();
+            }
+          }
+        }
+      )
+
+      if (options.immediate) {
+        job();
+      } else {
+        oldValue = effectFn();
+      }
+    }
+
+    function traverse(value, seen = new Set()) {
+      if(typeof value !== 'object' || value === null || seen.has(value)) return;
+      seen.add(value);
+      // 暂时不考虑数组等其它结构
+      for(const k in value) {
+        traverse(value[k], seen);
+      }
+      return value;
+    }
+
+    watch(
+      obj,
+      () => console.log('变化了'),
+      { flush: 'post' } // pre | post | sync
+    )
+
+    obj.num++
+  </script>
+</body>
+</html>
